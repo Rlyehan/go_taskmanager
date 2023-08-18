@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -9,18 +10,49 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 )
 
 func main() {
+	filterCh := make(chan string)
+
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			fmt.Print("Enter a filter: ")
+			filter, _ := reader.ReadString('\n')
+			filter = strings.TrimSpace(filter)
+			filterCh <- filter
+		}
+	}()
+
+	var filter string
+	var filterMu sync.Mutex
+
 	printSystemInfo()
 
 	fmt.Println(strings.Repeat("-", 50))
 
 	for {
+		select {
+		case newFilter := <-filterCh:
+			filterMu.Lock()
+			filter = newFilter
+			filterMu.Unlock()
+		default:
+		}
+
 		clearScreen()
-		processes := getProcesses()
+		printSystemInfo()
+
+		fmt.Println(strings.Repeat("-", 50))
+
+		filterMu.Lock()
+		processes := getProcesses(filter)
+		filterMu.Unlock()
+
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', tabwriter.AlignRight|tabwriter.Debug)
 		for _, process := range processes {
 			fmt.Fprintln(w, process)
@@ -49,7 +81,7 @@ func printSystemInfo() {
 	printUsageBar("CPU Usage:", cpuUsage)
 }
 
-func getProcesses() []string {
+func getProcesses(filter string) []string {
 	files, _ := ioutil.ReadDir("/proc")
 	var output []string
 	for _, file := range files {
@@ -71,9 +103,11 @@ func getProcesses() []string {
 			status := fields[2]
 			user := getUserForPid(pid)
 			cmd := strings.ReplaceAll(string(cmdline), "\x00", " ")
-			cmd = filepath.Base(cmd)
-			cmd = truncateString(cmd, 50)
-			output = append(output, fmt.Sprintf("%s\t%s\t%s\t%.2f%%\t%.2f%%\t%s", pid, user, status, cpuUsage, memUsage*100, cmd))
+			cmd = filepath.Base(cmd) 			
+      cmd = truncateString(cmd, 50) 
+			if strings.Contains(user, filter) || strings.Contains(pid, filter) || strings.Contains(cmd, filter) {
+				output = append(output, fmt.Sprintf("%s\t%s\t%s\t%.2f%%\t%.2f%%\t%s", pid, user, status, cpuUsage*100, memUsage*100, cmd))
+			}
 		}
 	}
 	return output
@@ -82,9 +116,9 @@ func getProcesses() []string {
 func getMemoryInfo() (totalMem float64, usedMem float64, memUsage float64) {
 	meminfo, _ := ioutil.ReadFile("/proc/meminfo")
 	lines := strings.Split(string(meminfo), "\n")
-	totalMem, _ = strconv.ParseFloat(strings.Fields(lines[0])[1], 64)
-	freeMem, _ := strconv.ParseFloat(strings.Fields(lines[1])[1], 64)
-	usedMem = totalMem - freeMem
+	totalMem, _ = strconv.ParseFloat(strings.Fields(lines[0])[1], 64) 
+  freeMem, _ := strconv.ParseFloat(strings.Fields(lines[1])[1], 64) 
+  usedMem = totalMem - freeMem
 	memUsage = usedMem / totalMem
 	return
 }
@@ -111,12 +145,14 @@ func getCPUUsage() (cpuUsage float64) {
 }
 
 func printUsageBar(label string, usage float64) {
+	numBlocks := int(usage * 20)
 	fmt.Print(label, " [")
-	for i := 0; i < int(usage*100/5); i++ {
-		fmt.Print("#")
-	}
-	for i := int(usage * 100 / 5); i < 20; i++ {
-		fmt.Print(" ")
+	for i := 0; i < 20; i++ {
+		if i < numBlocks {
+			fmt.Print("=")
+		} else {
+			fmt.Print(" ")
+		}
 	}
 	fmt.Println("]")
 }
@@ -126,18 +162,17 @@ func clearScreen() {
 }
 
 func truncateString(str string, num int) string {
-	bnoden := str
-	if len(str) > num {
-		if num > 3 {
-			num -= 3
-		}
-		bnoden = str[0:num] + "..."
+	if len(str) <= num {
+		return str
 	}
-	return bnoden
+	if num > 3 {
+		return str[:num-3] + "..."
+	}
+	return str[:num]
 }
 
 func isNumeric(s string) bool {
-	_, err := strconv.ParseInt(s, 10, 64)
+	_, err := strconv.ParseFloat(s, 64)
 	return err == nil
 }
 
